@@ -1,0 +1,21 @@
+{
+  "name": "web-streamio-server",
+  "version": "1.0.0",
+  "description": "Torrent streaming server (backend + static frontend host) - watch torrents in your browser like Stremio",
+  "type": "module",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.21.2",
+    "memory-chunk-store": "^1.3.5",
+    "mime-types": "^2.1.35",
+    "webtorrent": "^3.0.21"
+  }
+}

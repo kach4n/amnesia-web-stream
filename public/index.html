@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <title>web-streamio</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <h1>🎬 web-streamio</h1>
+    <p class="subtitle">Stream any torrent straight to your browser</p>
+  </header>
+
+  <main class="container">
+    <section class="add-torrent">
+      <form id="add-form">
+        <input
+          id="torrent-input"
+          type="text"
+          placeholder="Paste a magnet link, .torrent URL, or info hash..."
+          autocomplete="off"
+          required
+        />
+        <button type="submit" id="add-btn">Add</button>
+      </form>
+      <p id="add-error" class="error hidden"></p>
+    </section>
+
+    <section id="player-section" class="player-section hidden">
+      <video id="player" controls playsinline></video>
+      <p id="player-info" class="player-info"></p>
+    </section>
+
+    <section class="torrents">
+      <h2>Torrents</h2>
+      <div id="torrent-list" class="torrent-list"></div>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>
