@@ -85,6 +85,37 @@ button:disabled { opacity: 0.6; cursor: not-allowed; }
   margin: 6px 2px;
 }
 
+.hls-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+}
+
+.hls-btn {
+  padding: 8px 10px;
+  font-size: 0.8rem;
+  flex-shrink: 0;
+}
+
+.hls-time {
+  color: var(--text-dim);
+  font-size: 0.8rem;
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+}
+
+.hls-seek {
+  flex: 1;
+  min-width: 0;
+  accent-color: var(--accent);
+}
+.hls-seek:disabled { opacity: 0.4; }
+
 .compat-btn {
   width: 100%;
   background: transparent;

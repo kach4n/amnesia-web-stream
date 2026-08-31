@@ -8,10 +8,18 @@ import ffmpegPath from 'ffmpeg-static';
 import fs from 'node:fs';
 import { torrentManager } from './torrentManager.js';
 import { hlsManager } from './hlsManager.js';
+import { getCachedDuration, probeDuration } from './mediaProbe.js';
+import { createWindowedReadStream } from './windowedStream.js';
+import { log, logError } from './log.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.join(__dirname, '..', '..', 'public');
 const PORT = process.env.PORT || 3000;
+torrentManager.setPort(PORT);
+
+function streamUrl(infoHash, fileIndex) {
+  return `http://127.0.0.1:${PORT}/stream/${infoHash}/${fileIndex}`;
+}
 
 // A single malformed torrent (bad metadata, dependency bug, etc.) should never take down
 // the whole server - log it and keep serving other torrents/requests.
@@ -48,9 +56,18 @@ app.get('/api/torrents/:infoHash', (req, res) => {
 });
 
 app.delete('/api/torrents/:infoHash', async (req, res) => {
-  hlsManager.stopAllForTorrent(req.params.infoHash);
   const removed = await torrentManager.remove(req.params.infoHash);
   if (!removed) return res.status(404).json({ error: 'Torrent not found' });
+  res.status(204).end();
+});
+
+// The frontend pings this every few seconds while a file is loaded in the player, reporting
+// where it currently is. It's the only signal the server trusts as "someone is watching" - see
+// the comment above WATCH_TIMEOUT_MS in torrentManager.js for why. Sent via sendBeacon, so the
+// body arrives as a Blob rather than a normal fetch JSON body, but express.json() parses either.
+app.post('/api/torrents/:infoHash/heartbeat', (req, res) => {
+  const { fileIndex, position } = req.body || {};
+  torrentManager.heartbeat(req.params.infoHash, Number(fileIndex), Number(position) || 0);
   res.status(204).end();
 });
 
@@ -69,6 +86,17 @@ app.get('/stream/:infoHash/:fileIndex', (req, res) => {
   const fileSize = file.length;
   const contentType = mime.lookup(file.name) || 'application/octet-stream';
   const range = req.headers.range;
+  const chunkBytes = torrentManager.getChunkBytes(req.params.infoHash, fileIndex);
+
+  const serve = (start, end) => {
+    log('stream', `open - ${req.params.infoHash} file ${fileIndex} range ${start}-${end}`);
+    const stream = createWindowedReadStream(file, { start, end, chunkBytes });
+    torrentManager.registerStream(req.params.infoHash, stream);
+    stream.pipe(res);
+    stream.on('error', (err) => { logError('stream', `error - ${err.message}`); res.end(); });
+    stream.once('close', () => log('stream', `closed - ${req.params.infoHash} file ${fileIndex}`));
+    req.on('close', () => stream.destroy());
+  };
 
   if (!range) {
     res.writeHead(200, {
@@ -76,7 +104,7 @@ app.get('/stream/:infoHash/:fileIndex', (req, res) => {
       'Content-Type': contentType,
       'Accept-Ranges': 'bytes',
     });
-    file.createReadStream().pipe(res);
+    serve(0, fileSize - 1);
     return;
   }
 
@@ -100,11 +128,7 @@ app.get('/stream/:infoHash/:fileIndex', (req, res) => {
     'Content-Length': end - start + 1,
     'Content-Type': contentType,
   });
-
-  const stream = file.createReadStream({ start, end });
-  stream.pipe(res);
-  stream.on('error', () => res.end());
-  req.on('close', () => stream.destroy());
+  serve(start, end);
 });
 
 // ---- Transcoding (compatibility fallback) ----
@@ -120,14 +144,17 @@ app.get('/transcode/:infoHash/:fileIndex', (req, res) => {
   if (!file) return res.status(404).json({ error: 'File not found in torrent' });
 
   torrentManager.focusFile(req.params.infoHash, fileIndex);
+  log('transcode', `started - ${req.params.infoHash} file ${fileIndex}`);
 
   res.writeHead(200, {
     'Content-Type': 'video/mp4',
     'Cache-Control': 'no-cache',
   });
 
+  // Reads via our own /stream endpoint (instead of piping file.createReadStream() straight into
+  // ffmpeg's stdin) so this also benefits from /stream's windowed-download prioritization.
   const ffmpeg = spawn(ffmpegPath, [
-    '-i', 'pipe:0',
+    '-i', streamUrl(req.params.infoHash, fileIndex),
     '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23',
     '-c:a', 'aac', '-b:a', '160k', '-ac', '2',
     '-movflags', 'frag_keyframe+empty_moov+default_base_moof',
@@ -135,27 +162,47 @@ app.get('/transcode/:infoHash/:fileIndex', (req, res) => {
     'pipe:1',
   ]);
 
-  const input = file.createReadStream();
-  input.pipe(ffmpeg.stdin);
   ffmpeg.stdout.pipe(res);
   ffmpeg.stderr.on('data', () => {}); // swallow ffmpeg's verbose progress/logging
 
+  let cleaned = false;
   const cleanup = () => {
-    input.destroy();
-    ffmpeg.stdin.destroy();
+    if (cleaned) return;
+    cleaned = true;
     ffmpeg.kill('SIGKILL');
+    log('transcode', `ended - ${req.params.infoHash} file ${fileIndex}`);
   };
-  ffmpeg.on('error', (err) => console.error('[ffmpeg]', err.message));
+  ffmpeg.on('error', (err) => logError('transcode', err.message));
   req.on('close', cleanup);
   res.on('close', cleanup);
+});
+
+// ---- Duration probing (for the custom HLS seek timeline) ----
+app.get('/api/torrents/:infoHash/files/:fileIndex/duration', async (req, res) => {
+  const torrent = torrentManager.get(req.params.infoHash);
+  if (!torrent) return res.status(404).json({ error: 'Torrent not found' });
+
+  const fileIndex = Number(req.params.fileIndex);
+  const file = torrent.files[fileIndex];
+  if (!file) return res.status(404).json({ error: 'File not found in torrent' });
+
+  const cached = getCachedDuration(req.params.infoHash, fileIndex);
+  if (cached != null) return res.json({ duration: cached });
+
+  const duration = await probeDuration(req.params.infoHash, fileIndex, streamUrl(req.params.infoHash, fileIndex));
+  res.json({ duration });
 });
 
 // ---- HLS transcoding (iOS compatibility) ----
 // iOS's browser engine (WebKit - this applies to "Chrome" on iOS too, Apple requires it) won't
 // progressively play an indefinite-duration fragmented MP4 like /transcode produces above; it
 // only knows how to stream via HLS. This transcodes to an .m3u8 playlist + .ts segments instead,
-// which iOS plays natively. The playlist grows as ffmpeg produces more segments, which is also
-// what lets the <video> element seek backward/forward within whatever's been transcoded so far.
+// which iOS plays natively.
+//
+// Real seeking: a `t` query param (seconds) tells ffmpeg to -ss seek its input before
+// transcoding. Since native iOS HLS playback doesn't let us intercept seek gestures at the
+// network level, the frontend implements seeking itself - it swaps the <video> src to this URL
+// with a new `t`, which restarts transcoding from that offset (see the custom timeline in app.js).
 app.get('/hls/:infoHash/:fileIndex/playlist.m3u8', async (req, res) => {
   const torrent = torrentManager.get(req.params.infoHash);
   if (!torrent) return res.status(404).json({ error: 'Torrent not found' });
@@ -166,7 +213,8 @@ app.get('/hls/:infoHash/:fileIndex/playlist.m3u8', async (req, res) => {
 
   torrentManager.focusFile(req.params.infoHash, fileIndex);
 
-  const session = hlsManager.getOrCreate(req.params.infoHash, fileIndex, file);
+  const startSeconds = Math.max(0, Number(req.query.t) || 0);
+  const session = hlsManager.start(req.params.infoHash, fileIndex, streamUrl(req.params.infoHash, fileIndex), startSeconds);
   try {
     const playlist = await hlsManager.waitForPlaylist(session);
     const rewritten = playlist.replace(
@@ -200,7 +248,7 @@ app.get('*', (req, res, next) => {
 });
 
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`web-streamio server running:`);
+  console.log(`Amnesia web-stream server running:`);
   console.log(`  Local:   http://localhost:${PORT}`);
   console.log(`  Network: http://<your-lan-ip>:${PORT}`);
 });

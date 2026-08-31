@@ -3,12 +3,12 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-  <title>web-streamio</title>
+  <title>Amnesia web-stream</title>
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
   <header class="topbar">
-    <h1>🎬 web-streamio</h1>
+    <h1>🎬 Amnesia web-stream</h1>
     <p class="subtitle">Stream any torrent straight to your browser</p>
   </header>
 
@@ -29,6 +29,14 @@
 
     <section id="player-section" class="player-section hidden">
       <video id="player" controls playsinline></video>
+      <div id="hls-controls" class="hls-controls hidden">
+        <button id="hls-playpause" class="hls-btn" type="button" aria-label="Play/pause">⏸</button>
+        <button id="hls-back10" class="hls-btn" type="button" aria-label="Back 10 seconds">-10s</button>
+        <span id="hls-current-time" class="hls-time">0:00</span>
+        <input id="hls-seek" class="hls-seek" type="range" min="0" max="0" step="1" value="0" disabled />
+        <span id="hls-duration" class="hls-time">--:--</span>
+        <button id="hls-fwd10" class="hls-btn" type="button" aria-label="Forward 10 seconds">+10s</button>
+      </div>
       <p id="player-info" class="player-info"></p>
       <button id="compat-btn" class="compat-btn hidden" type="button">Having trouble playing? Try compatibility mode</button>
     </section>

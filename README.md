@@ -1,4 +1,4 @@
-# web-streamio
+# Amnesia web-stream
 
 Stream any torrent (magnet link, `.torrent` URL, or info hash) directly to a browser — no download-and-wait, no desktop app. Run the server on one computer, then open the web page from your phone, tablet, or any other device on the same network (or over the internet, if you expose it).
 
@@ -26,7 +26,7 @@ npm start
 You'll see something like:
 
 ```
-web-streamio server running:
+Amnesia web-stream server running:
   Local:   http://localhost:3000
   Network: http://<your-lan-ip>:3000
 ```
