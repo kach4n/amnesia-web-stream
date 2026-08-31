@@ -8,9 +8,11 @@ const torrentList = document.getElementById('torrent-list');
 const playerSection = document.getElementById('player-section');
 const player = document.getElementById('player');
 const playerInfo = document.getElementById('player-info');
+const compatBtn = document.getElementById('compat-btn');
 
 let torrents = [];
 let pollTimer = null;
+let currentPlaying = null;
 
 function bytesToSize(bytes) {
   if (!bytes) return '0 B';
@@ -57,14 +59,81 @@ async function removeTorrent(infoHash) {
   await fetchTorrents();
 }
 
-function playFile(infoHash, file) {
-  const src = `/stream/${infoHash}/${file.index}`;
-  player.src = src;
-  playerSection.classList.remove('hidden');
-  playerInfo.textContent = file.name;
-  player.play().catch(() => {});
-  playerSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
+// iOS's browser engine (WebKit - true of "Chrome" on iOS too, Apple requires every iOS browser
+// to use it) can't play most torrent containers/codecs directly (e.g. .mkv, HEVC, AC3/DTS), and
+// unlike desktop/Android it also can't fall back to a live fragmented-MP4 stream - it only plays
+// video streamed as HLS. So iOS gets routed straight to /hls instead of /transcode.
+const IS_IOS = /iP(hone|od|ad)/.test(navigator.userAgent)
+  || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+
+const STALL_TIMEOUT_MS = 8000;
+let stallTimer = null;
+
+function clearStallTimer() {
+  if (stallTimer) clearTimeout(stallTimer);
+  stallTimer = null;
 }
+
+// Watches for silent failures: some mobile browsers never fire an `error` event for an
+// unsupported/stuck stream, they just sit there with a spinner forever. If we don't reach
+// HAVE_CURRENT_DATA within STALL_TIMEOUT_MS, treat it as a failure and move to the next fallback.
+function armStallTimer(onStall) {
+  clearStallTimer();
+  stallTimer = setTimeout(() => {
+    if (player.readyState < 2) onStall();
+  }, STALL_TIMEOUT_MS);
+  player.addEventListener('loadeddata', clearStallTimer, { once: true });
+}
+
+function playFile(infoHash, file) {
+  currentPlaying = { infoHash, file };
+  playerSection.classList.remove('hidden');
+  playerSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  playDirect(infoHash, file);
+}
+
+// Some containers/codecs (e.g. .mkv with HEVC/DTS) aren't supported by every device's
+// browser - notably most phones. If direct playback fails (or silently stalls), fall back
+// to a transcoded stream.
+function playDirect(infoHash, file) {
+  const fallback = IS_IOS ? () => playHls(infoHash, file) : () => playTranscoded(infoHash, file);
+  player.onerror = fallback;
+  player.src = `/stream/${infoHash}/${file.index}`;
+  playerInfo.textContent = file.name;
+  compatBtn.classList.remove('hidden');
+  compatBtn.textContent = 'Having trouble playing? Try compatibility mode';
+  compatBtn.disabled = false;
+  armStallTimer(fallback);
+  player.play().catch(() => {});
+}
+
+function playTranscoded(infoHash, file) {
+  player.onerror = null;
+  clearStallTimer();
+  player.src = `/transcode/${infoHash}/${file.index}`;
+  playerInfo.textContent = `${file.name} (compatibility mode - seeking disabled)`;
+  compatBtn.textContent = 'Playing in compatibility mode';
+  compatBtn.disabled = true;
+  player.play().catch(() => {});
+}
+
+// HLS: iOS plays .m3u8 natively via a plain <video src>, no library needed. The playlist grows
+// as the server transcodes more of the file, which is also what lets seeking work here.
+function playHls(infoHash, file) {
+  player.onerror = null;
+  clearStallTimer();
+  player.src = `/hls/${infoHash}/${file.index}/playlist.m3u8`;
+  playerInfo.textContent = `${file.name} (compatibility mode)`;
+  compatBtn.textContent = 'Playing in compatibility mode';
+  compatBtn.disabled = true;
+  player.play().catch(() => {});
+}
+
+compatBtn.addEventListener('click', () => {
+  if (!currentPlaying) return;
+  if (IS_IOS) playHls(currentPlaying.infoHash, currentPlaying.file);
+  else playTranscoded(currentPlaying.infoHash, currentPlaying.file);
+});
 
 function render() {
   torrentList.innerHTML = '';

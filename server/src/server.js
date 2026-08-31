@@ -2,8 +2,12 @@ import express from 'express';
 import cors from 'cors';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { spawn } from 'node:child_process';
 import mime from 'mime-types';
+import ffmpegPath from 'ffmpeg-static';
+import fs from 'node:fs';
 import { torrentManager } from './torrentManager.js';
+import { hlsManager } from './hlsManager.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.join(__dirname, '..', '..', 'public');
@@ -44,6 +48,7 @@ app.get('/api/torrents/:infoHash', (req, res) => {
 });
 
 app.delete('/api/torrents/:infoHash', async (req, res) => {
+  hlsManager.stopAllForTorrent(req.params.infoHash);
   const removed = await torrentManager.remove(req.params.infoHash);
   if (!removed) return res.status(404).json({ error: 'Torrent not found' });
   res.status(204).end();
@@ -100,6 +105,91 @@ app.get('/stream/:infoHash/:fileIndex', (req, res) => {
   stream.pipe(res);
   stream.on('error', () => res.end());
   req.on('close', () => stream.destroy());
+});
+
+// ---- Transcoding (compatibility fallback) ----
+// Some containers/codecs (e.g. .mkv with HEVC/DTS) that play fine on a desktop browser
+// aren't supported at all on phones. Re-encode on the fly to widely-supported H.264/AAC MP4.
+// Trades away seeking (no known duration/byte ranges for a live-encoded stream) for compatibility.
+app.get('/transcode/:infoHash/:fileIndex', (req, res) => {
+  const torrent = torrentManager.get(req.params.infoHash);
+  if (!torrent) return res.status(404).json({ error: 'Torrent not found' });
+
+  const fileIndex = Number(req.params.fileIndex);
+  const file = torrent.files[fileIndex];
+  if (!file) return res.status(404).json({ error: 'File not found in torrent' });
+
+  torrentManager.focusFile(req.params.infoHash, fileIndex);
+
+  res.writeHead(200, {
+    'Content-Type': 'video/mp4',
+    'Cache-Control': 'no-cache',
+  });
+
+  const ffmpeg = spawn(ffmpegPath, [
+    '-i', 'pipe:0',
+    '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23',
+    '-c:a', 'aac', '-b:a', '160k', '-ac', '2',
+    '-movflags', 'frag_keyframe+empty_moov+default_base_moof',
+    '-f', 'mp4',
+    'pipe:1',
+  ]);
+
+  const input = file.createReadStream();
+  input.pipe(ffmpeg.stdin);
+  ffmpeg.stdout.pipe(res);
+  ffmpeg.stderr.on('data', () => {}); // swallow ffmpeg's verbose progress/logging
+
+  const cleanup = () => {
+    input.destroy();
+    ffmpeg.stdin.destroy();
+    ffmpeg.kill('SIGKILL');
+  };
+  ffmpeg.on('error', (err) => console.error('[ffmpeg]', err.message));
+  req.on('close', cleanup);
+  res.on('close', cleanup);
+});
+
+// ---- HLS transcoding (iOS compatibility) ----
+// iOS's browser engine (WebKit - this applies to "Chrome" on iOS too, Apple requires it) won't
+// progressively play an indefinite-duration fragmented MP4 like /transcode produces above; it
+// only knows how to stream via HLS. This transcodes to an .m3u8 playlist + .ts segments instead,
+// which iOS plays natively. The playlist grows as ffmpeg produces more segments, which is also
+// what lets the <video> element seek backward/forward within whatever's been transcoded so far.
+app.get('/hls/:infoHash/:fileIndex/playlist.m3u8', async (req, res) => {
+  const torrent = torrentManager.get(req.params.infoHash);
+  if (!torrent) return res.status(404).json({ error: 'Torrent not found' });
+
+  const fileIndex = Number(req.params.fileIndex);
+  const file = torrent.files[fileIndex];
+  if (!file) return res.status(404).json({ error: 'File not found in torrent' });
+
+  torrentManager.focusFile(req.params.infoHash, fileIndex);
+
+  const session = hlsManager.getOrCreate(req.params.infoHash, fileIndex, file);
+  try {
+    const playlist = await hlsManager.waitForPlaylist(session);
+    const rewritten = playlist.replace(
+      /^(seg\d{5}\.ts)$/gm,
+      (segName) => `/hls/${req.params.infoHash}/${fileIndex}/${session.sessionId}/${segName}`
+    );
+    res.writeHead(200, {
+      'Content-Type': 'application/vnd.apple.mpegurl',
+      'Cache-Control': 'no-cache',
+    });
+    res.end(rewritten);
+  } catch (err) {
+    res.status(502).json({ error: err.message });
+  }
+});
+
+app.get('/hls/:infoHash/:fileIndex/:sessionId/:segment', (req, res) => {
+  const fileIndex = Number(req.params.fileIndex);
+  const segmentPath = hlsManager.segmentPath(req.params.infoHash, fileIndex, req.params.sessionId, req.params.segment);
+  if (!segmentPath || !fs.existsSync(segmentPath)) return res.status(404).end();
+
+  res.writeHead(200, { 'Content-Type': 'video/mp2t', 'Cache-Control': 'no-cache' });
+  fs.createReadStream(segmentPath).pipe(res);
 });
 
 // ---- Static frontend ----

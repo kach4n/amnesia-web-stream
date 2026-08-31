@@ -95,11 +95,12 @@ web-streamio/
 | POST   | `/api/torrents`                    | Add a torrent. Body: `{ "torrentId": "magnet:..." }` |
 | GET    | `/api/torrents/:infoHash`          | Get status/progress for one torrent               |
 | DELETE | `/api/torrents/:infoHash`          | Stop and remove a torrent, deleting its data       |
-| GET    | `/stream/:infoHash/:fileIndex`     | Stream a file (supports `Range` requests)          |
+| GET    | `/stream/:infoHash/:fileIndex`     | Stream a file as-is (supports `Range` requests)    |
+| GET    | `/transcode/:infoHash/:fileIndex`  | Re-encode a file to H.264/AAC MP4 on the fly (compatibility fallback, no seeking) |
 
 ## Notes & limitations
 
 - Torrent pieces are kept **in memory only** (never written to disk) - nothing persists on server storage. This means RAM usage grows while a torrent is active, and all downloaded data is lost when a torrent is removed or the server restarts.
-- Playback format depends on your browser's native `<video>`/`<audio>` support (e.g. H.264/AAC in MP4 generally works everywhere; some codecs inside `.mkv`/`.avi` files may not play in all browsers since there's no server-side transcoding).
+- Playback format depends on your browser's native `<video>`/`<audio>` support. Desktop browsers are often more permissive (e.g. Windows Chrome/Edge can lean on OS codecs), while phones are stricter — `.mkv` files with HEVC/DTS audio, for example, commonly fail to play on mobile. If direct playback fails, the player automatically retries using the `/transcode` endpoint, which re-encodes the file on the fly to universally-supported H.264 video + AAC audio using [ffmpeg](https://ffmpeg.org/) (bundled via `ffmpeg-static`, no separate install needed). There's also a manual "Try compatibility mode" button in case a device doesn't report the error. Trade-off: transcoding uses CPU on the server and doesn't support seeking (the stream is generated sequentially, so you can only play from the start).
 - There is no authentication — treat this as a trusted-network / personal-use tool.
 - Only one server instance is needed; the frontend and backend are served from the same origin, so there's no CORS configuration to worry about.

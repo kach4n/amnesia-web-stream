@@ -85,6 +85,18 @@ button:disabled { opacity: 0.6; cursor: not-allowed; }
   margin: 6px 2px;
 }
 
+.compat-btn {
+  width: 100%;
+  background: transparent;
+  color: var(--text-dim);
+  border: 1px solid var(--border);
+  font-weight: 500;
+  font-size: 0.85rem;
+  padding: 10px;
+}
+.compat-btn:hover:not(:disabled) { background: rgba(255, 255, 255, 0.05); color: var(--text); }
+.compat-btn:disabled { opacity: 0.6; cursor: default; }
+
 .torrents { margin-top: 28px; }
 .torrents h2 { font-size: 1.1rem; margin-bottom: 10px; }
 
